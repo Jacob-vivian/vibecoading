@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>粒子星云隧道 · NEBULA TUNNEL</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{display:block}
+  #title{position:fixed;top:26px;left:50%;transform:translateX(-50%);z-index:9;color:rgba(255,255,255,.9);font:600 22px/1.5 system-ui;letter-spacing:.14em;text-align:center;text-shadow:0 0 20px rgba(150,120,255,.9);pointer-events:none}
+  #title span{font-size:13px;opacity:.72;font-weight:400;letter-spacing:.08em}
+  #timer{position:fixed;top:28px;right:30px;z-index:9;color:rgba(255,255,255,.85);font:600 15px monospace;text-shadow:0 0 10px rgba(255,255,255,.5)}
+  #story{position:fixed;left:50%;bottom:18%;transform:translateX(-50%);z-index:8;color:#fff;font:500 30px/1.7 "Microsoft YaHei",system-ui;letter-spacing:.1em;text-align:center;opacity:0;transition:opacity 1.2s ease;text-shadow:0 0 26px rgba(150,120,255,.95),0 2px 8px rgba(0,0,0,.6);pointer-events:none;white-space:nowrap}
+  #ui{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);display:flex;gap:14px;z-index:9}
+  #vignette{position:fixed;inset:0;z-index:6;pointer-events:none;background:radial-gradient(ellipse at center,transparent 52%,rgba(0,0,0,.62) 100%)}
+  button{padding:13px 30px;font-size:16px;border-radius:999px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08);color:#fff;cursor:pointer;backdrop-filter:blur(10px);transition:.25s;letter-spacing:.06em}
+  button:hover{background:rgba(255,255,255,.22);box-shadow:0 0 24px rgba(160,130,255,.45)}
+</style>
+</head>
+<body>
+<div id="title">粒子星云 · NEBULA TUNNEL<br><span>Claude Code × Three.js · 移动鼠标与星云互动 · #VibeCoding大赏</span></div>
+<div id="timer"></div>
+<div id="story"></div>
+<div id="vignette"></div>
+<div id="ui"><button id="music">🎵 音乐：关</button><button id="rec">🎬 开始录制（45 秒）</button></div>
+
+<script src="three.min.js"></script>
+<script>
+// ================= 粒子星云隧道 =================
+const N = 16000;            // 粒子数
+const TUNNEL_LEN = 160;     // 隧道长度
+const RADIUS = 7;           // 隧道半径
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x050510, 0.022);
+
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 300);
+camera.position.set(0, 1.6, -TUNNEL_LEN * 0.3);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// 柔光圆点纹理（让所有粒子/星星发光，不是方块）——必须最先定义
+function makeGlowTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const ctx = c.getContext("2d");
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.22, "rgba(255,255,255,.75)");
+  g.addColorStop(0.55, "rgba(255,255,255,.22)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const glowTex = makeGlowTexture();
+
+// ---- 粒子几何：黄金角螺旋管分布 ----
+const pos = new Float32Array(N * 3);
+const col = new Float32Array(N * 3);
+const golden = Math.PI * (3 - Math.sqrt(5));
+const c1 = new THREE.Color(0x14145c);   // 深海蓝
+const c2 = new THREE.Color(0x8a6bff);   // 柔紫
+const c3 = new THREE.Color(0xffd9a8);   // 香槟金
+const tmp = new THREE.Color();
+
+for (let i = 0; i < N; i++) {
+  const t = i / N;                       // 0..1 沿隧道
+  const a = i * golden;                  // 黄金角
+  const r = RADIUS * (0.55 + 0.45 * Math.sin(t * Math.PI * 3 + i * 0.01));
+  pos[i * 3]     = Math.cos(a) * r;
+  pos[i * 3 + 1] = Math.sin(a) * r;
+  pos[i * 3 + 2] = t * TUNNEL_LEN - TUNNEL_LEN / 2;
+
+  // 三段渐变：紫 → 品红 → 青
+  if (t < 0.5) tmp.copy(c1).lerp(c2, t * 2);
+  else         tmp.copy(c2).lerp(c3, (t - 0.5) * 2);
+  col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+
+const mat = new THREE.PointsMaterial({
+  size: 0.3, map: glowTex, vertexColors: true, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+});
+const cloud = new THREE.Points(geo, mat);
+scene.add(cloud);
+
+// 流星层：18 条细线优雅掠过
+const meteorGroup = new THREE.Group();
+const meteorLines = [];
+for (let i = 0; i < 18; i++) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([
+    0, 0, 0,
+    0, 0, -0.9
+  ]), 3));
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: 0xffe8c8, transparent: true, opacity: 0.28 + Math.random() * 0.2,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  line.visible = false;
+  meteorGroup.add(line);
+  meteorLines.push({
+    line,
+    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+    next: Math.random() * 10   // 首次出现的延迟（秒）
+  });
+}
+scene.add(meteorGroup);
+
+// 背景星幕（远层）：万颗繁星，三层景深
+function makeStars(count, spread, size, color, opacity) {
+  const g = new THREE.BufferGeometry();
+  const p = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    p[i * 3] = (Math.random() - 0.5) * spread;
+    p[i * 3 + 1] = (Math.random() - 0.5) * spread;
+    p[i * 3 + 2] = (Math.random() - 0.5) * spread;
+  }
+  g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+  const pts = new THREE.Points(g, new THREE.PointsMaterial({
+    size, map: glowTex, color, transparent: true, opacity,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  scene.add(pts);
+  return pts;
+}
+const starsFar   = makeStars(9000, 260, 0.12, 0xaab8ff, 0.5);   // 远：细小淡蓝
+const starsMid   = makeStars(3000, 200, 0.28, 0xdfe6ff, 0.65);  // 中：白亮
+const starsGold  = makeStars(600,  180, 0.5,  0xffe3b0, 0.8);   // 近：金色亮点
+
+// 星云光斑：大颗柔光，漂浮在隧道四周
+const glowGeo = new THREE.BufferGeometry();
+const glowPos = new Float32Array(90 * 3);
+const glowCol = new Float32Array(90 * 3);
+const g1 = new THREE.Color(0x3a2f8a), g2 = new THREE.Color(0x7a5cff), gt = new THREE.Color();
+for (let i = 0; i < 90; i++) {
+  glowPos[i * 3] = (Math.random() - 0.5) * 70;
+  glowPos[i * 3 + 1] = (Math.random() - 0.5) * 46;
+  glowPos[i * 3 + 2] = (Math.random() - 0.5) * TUNNEL_LEN;
+  gt.copy(g1).lerp(g2, Math.random());
+  glowCol[i * 3] = gt.r; glowCol[i * 3 + 1] = gt.g; glowCol[i * 3 + 2] = gt.b;
+}
+glowGeo.setAttribute("position", new THREE.BufferAttribute(glowPos, 3));
+glowGeo.setAttribute("color", new THREE.BufferAttribute(glowCol, 3));
+const glows = new THREE.Points(glowGeo, new THREE.PointsMaterial({
+  size: 3.2, vertexColors: true, transparent: true, opacity: 0.16,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+scene.add(glows);
+
+// ================= 故事字幕 =================
+const story = [
+  "宇宙，最后的边疆。",
+  "这是星舰的航程——",
+  "探索未知的新世界。",
+  "寻找新的生命，与新的文明。",
+  "勇踏前人未至之境。",
+  "深空之中，我们启航。"
+];
+let storyStart = null, lastIdx = -1;
+
+function updateStory(t) {
+  const st = storyStart != null ? t - storyStart : t;
+  const idx = Math.floor(st / 7);
+  const phase = st - idx * 7;
+  const el = document.getElementById("story");
+  if (idx < story.length) {
+    if (idx !== lastIdx) { el.textContent = story[idx]; lastIdx = idx; }
+    el.style.opacity = (phase > 6.2) ? 0 : 1;
+  } else {
+    el.style.opacity = 0;
+  }
+}
+
+// ================= 运镜与动画 =================
+let recStart = null, recTimer = 45;
+const speed = 5.2;              // 前进速度（单位/秒）
+
+// ---- 鼠标交互：视差跟随 + 粒子扰动 ----
+const mouse = { x: 0, y: 0, tx: 0, ty: 0 };   // 当前值 / 目标值（归一化 -1..1）
+window.addEventListener("mousemove", e => {
+  mouse.tx = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.ty = (e.clientY / window.innerHeight) * 2 - 1;
+});
+// 触屏支持
+window.addEventListener("touchmove", e => {
+  mouse.tx = (e.touches[0].clientX / window.innerWidth) * 2 - 1;
+  mouse.ty = (e.touches[0].clientY / window.innerHeight) * 2 - 1;
+}, { passive: true });
+
+function animate(time) {
+  requestAnimationFrame(animate);
+  const t = time / 1000;
+
+  // 鼠标平滑跟随（低灵敏度）
+  mouse.x += (mouse.tx - mouse.x) * 0.035;
+  mouse.y += (mouse.ty - mouse.y) * 0.035;
+
+  // 隧道旋转 + 呼吸波动 + 鼠标扰动
+  cloud.rotation.z = t * 0.3 + mouse.x * 0.22;
+  cloud.rotation.x = Math.sin(t * 0.22) * 0.16 + mouse.y * 0.15;
+  starsFar.rotation.y = t * 0.008;
+  starsMid.rotation.y = t * 0.012 + mouse.x * 0.01;
+  starsGold.rotation.y = t * 0.02 + mouse.y * 0.012;
+  glows.rotation.y = t * 0.006;
+
+  // 星星呼吸闪烁（缓慢明暗波动）
+  starsFar.material.opacity = 0.5 + Math.sin(t * 0.7) * 0.1;
+  starsMid.material.opacity = 0.65 + Math.sin(t * 0.9 + 1.3) * 0.12;
+  starsGold.material.opacity = 0.8 + Math.sin(t * 1.2 + 2.6) * 0.15;
+
+  // 故事句切换时镜头轻推（每句前 1.5 秒缓慢推进感）
+  const stForCam = storyStart != null ? t - storyStart : t;
+  const camPhrase = stForCam % 7;
+  const push = camPhrase < 1.5 ? (1.5 - camPhrase) / 1.5 : 0;  // 1→0 递减
+  const fovPush = push * 2.2;
+
+  // 相机沿隧道推进（循环）+ 鼠标视差
+  let z = (t * speed) % TUNNEL_LEN - TUNNEL_LEN * 0.32;
+  camera.fov = 62 - fovPush;
+  camera.updateProjectionMatrix();
+  camera.position.z = z;
+  camera.position.x = Math.sin(t * 0.4) * 0.9 + mouse.x * 0.9;
+  camera.position.y = 1.6 + Math.cos(t * 0.5) * 0.6 - mouse.y * 0.7;
+  camera.lookAt(mouse.x * 0.6, -mouse.y * 0.5, z + 14);
+
+  // ---- 流星（稀疏优雅） ----
+  for (const m of meteorLines) {
+    if (!m.line.visible) {
+      m.next -= 1 / 60;
+      if (m.next > 0) continue;
+      // 在相机前方随机位置生成，朝屏幕深处飞
+      m.x = (Math.random() - 0.5) * 26 + camera.position.x;
+      m.y = (Math.random() - 0.5) * 14 + camera.position.y;
+      m.z = camera.position.z + 18 + Math.random() * 20;
+      const sp = 16 + Math.random() * 10;
+      m.vx = (Math.random() - 0.5) * 2;
+      m.vy = (Math.random() - 0.5) * 1.6;
+      m.vz = -sp;
+      m.line.visible = true;
+    }
+    m.x += m.vx / 60; m.y += m.vy / 60; m.z += m.vz / 60;
+    m.line.position.set(m.x, m.y, m.z);
+    if (m.z < camera.position.z - 6) { m.line.visible = false; m.next = 1.5 + Math.random() * 7; }
+  }
+
+  renderer.render(scene, camera);
+
+  // 故事字幕
+  updateStory(t);
+
+  // 录制计时
+  if (recStart) {
+    const left = recTimer - (t - recStart);
+    document.getElementById("timer").textContent = left > 0 ? "⏺ " + Math.ceil(left) + "s" : "";
+    if (left <= 0) stopRec();
+  }
+}
+
+// ================= 原创电子乐（Web Audio 实时合成） =================
+let audioCtx = null, musicOn = false, musicTimer = null, masterGain = null, mediaDest = null;
+const CHORDS = [   // Am7 → Fmaj7 → Cmaj7 → G，A 小调氛围进行
+  [220.00, 261.63, 329.63, 392.00],
+  [174.61, 220.00, 261.63, 329.63],
+  [130.81, 196.00, 246.94, 329.63],
+  [98.00, 146.83, 196.00, 246.94]
+];
+
+function out() { return masterGain; }
+
+function pad(freq, t0, dur) {
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "sine"; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.05, t0 + dur * 0.2);
+  g.gain.linearRampToValueAtTime(0, t0 + dur);
+  o.connect(g).connect(out());
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+function arp(freq, t0, dur) {
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "triangle"; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.035, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  o.connect(g).connect(out());
+  o.start(t0); o.stop(t0 + dur + 0.02);
+}
+function kick(t0) {
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(150, t0);
+  o.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
+  g.gain.setValueAtTime(0.16, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+  o.connect(g).connect(out());
+  o.start(t0); o.stop(t0 + 0.2);
+}
+function hat(t0) {
+  const len = 0.04, buf = audioCtx.createBuffer(1, audioCtx.sampleRate * len, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  const src = audioCtx.createBufferSource(), g = audioCtx.createGain();
+  src.buffer = buf;
+  g.gain.setValueAtTime(0.03, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + len);
+  src.connect(g).connect(out());
+  src.start(t0);
+}
+
+function startMusic() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.9;
+    masterGain.connect(audioCtx.destination);
+    mediaDest = audioCtx.createMediaStreamDestination();   // 录音轨用
+    masterGain.connect(mediaDest);
+  }
+  if (musicOn) return;
+  musicOn = true;
+  const beat = 0.6, stepDur = beat / 4;   // BPM 100，16 分音符
+  let step = 0;
+  function tick() {
+    if (!musicOn) return;
+    const chord = CHORDS[Math.floor(step / 16) % 4];
+    const t0 = audioCtx.currentTime + 0.01;
+    if (step % 16 === 0) chord.forEach(f => pad(f, t0, beat * 4));
+    arp(chord[(step % 16) % chord.length] * 2, t0, stepDur * 0.9);
+    if (step % 4 === 0) kick(t0);
+    if (step % 4 === 2) hat(t0);
+    step++;
+    musicTimer = setTimeout(tick, stepDur * 1000);
+  }
+  tick();
+}
+function stopMusic() {
+  musicOn = false;
+  if (musicTimer) clearTimeout(musicTimer);
+}
+
+document.getElementById("music").addEventListener("click", () => {
+  if (musicOn) { stopMusic(); document.getElementById("music").textContent = "🎵 音乐：关"; }
+  else { startMusic(); document.getElementById("music").textContent = "🎵 音乐：开"; }
+});
+
+// ================= 录制导出 =================
+let recorder, chunks = [];
+document.getElementById("rec").addEventListener("click", () => {
+  if (recorder && recorder.state === "recording") return;
+  chunks = [];
+  const canvasStream = renderer.domElement.captureStream(60);
+  // 合成流：画面 + 音乐
+  let combined = canvasStream;
+  if (mediaDest && mediaDest.stream.getAudioTracks().length) {
+    combined = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...mediaDest.stream.getAudioTracks()
+    ]);
+  }
+  const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+    ? "video/webm;codecs=vp9"
+    : "video/webm;codecs=vp8";
+  recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "nebula-tunnel.webm";
+    a.click();
+    document.getElementById("rec").textContent = "🎬 重新录制（45 秒）";
+  };
+  recorder.start(250);
+  recStart = performance.now() / 1000;
+  storyStart = recStart;   // 故事从录制那一刻开始讲
+  lastIdx = -1;
+  if (!musicOn) { startMusic(); document.getElementById("music").textContent = "🎵 音乐：开"; }
+  document.getElementById("rec").textContent = "⏺ 录制中… 45 秒后自动保存";
+});
+
+function stopRec() {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  recStart = null;
+  storyStart = null;
+  lastIdx = -1;
+  document.getElementById("timer").textContent = "";
+  document.getElementById("story").style.opacity = 0;
+}
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate(0);
+</script>
+</body>
+</html>
